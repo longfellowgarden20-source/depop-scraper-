@@ -1,9 +1,7 @@
 import google.generativeai as genai
 import requests
-import sqlite3
-import os
-from config import GEMINI_API_KEY, ITEM_DESCRIPTIONS, GROQ_API_KEY
-from scraper import DB_PATH, bump_seller_match
+from config import GEMINI_API_KEY, ITEM_DESCRIPTIONS, GROQ_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY
+from scraper import supa_get, supa_update, supa_insert, bump_seller_match
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -48,7 +46,6 @@ Answer with only YES or NO."""
 
 
 def generate_reason(title, description, query):
-    """Use Groq (free) to write a one-line reason why this listing matched."""
     if not GROQ_API_KEY:
         return ""
 
@@ -79,36 +76,28 @@ Write ONE short sentence (under 20 words) explaining the specific visual or desc
 
 
 def run_vision_check():
-    conn = sqlite3.connect(DB_PATH)
-    unscreened = conn.execute("""
-        SELECT id, image_url, query, title, description, seller FROM listings
-        WHERE (ai_match IS NULL OR ai_match = 0)
-        AND sold = 0
-        AND image_url != ''
-        LIMIT 50
-    """).fetchall()
+    unscreened = supa_get(
+        "depop_listings",
+        "ai_match=eq.0&sold=eq.0&image_url=neq.&select=id,image_url,query,title,description,seller&limit=50"
+    )
 
     matches = []
-    for listing_id, image_url, query, title, description, seller in unscreened:
+    for row in unscreened:
+        listing_id = row["id"]
         print(f"[vision] Checking {listing_id}...")
-        is_match = check_listing(image_url, query)
+        is_match = check_listing(row["image_url"], row["query"])
 
         if is_match:
-            reason = generate_reason(title, description, query)
-            conn.execute(
-                "UPDATE listings SET ai_match = 1, ai_reason = ? WHERE id = ?",
-                (reason, listing_id)
-            )
-            bump_seller_match(conn, seller)
+            reason = generate_reason(row["title"], row["description"], row["query"])
+            supa_update("depop_listings", {"ai_match": 1, "ai_reason": reason}, "id", listing_id)
+            bump_seller_match(row["seller"])
             matches.append((listing_id, reason))
-            print(f"  MATCH: {title[:50]}")
+            print(f"  MATCH: {row['title'][:50]}")
             if reason:
                 print(f"  Why: {reason}")
         else:
-            conn.execute("UPDATE listings SET ai_match = -1 WHERE id = ?", (listing_id,))
+            supa_update("depop_listings", {"ai_match": -1}, "id", listing_id)
 
-    conn.commit()
-    conn.close()
     return matches
 
 

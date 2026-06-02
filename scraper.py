@@ -1,18 +1,20 @@
 import requests
 import time
-import os
-import sqlite3
-from datetime import datetime
-from config import SEARCH_QUERIES, MIN_PRICE, MAX_PRICE, POLL_INTERVAL
+from datetime import datetime, timezone
+from config import SEARCH_QUERIES, MIN_PRICE, MAX_PRICE, POLL_INTERVAL, SUPABASE_URL, SUPABASE_SERVICE_KEY
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
     "Accept": "application/json",
 }
 
-DB_PATH = "data/listings.db"
+SUPA_HEADERS = {
+    "apikey": SUPABASE_SERVICE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation",
+}
 
-# Keywords that signal a high-value vintage listing — more hits = higher score
 SCORE_SIGNALS = [
     "deadstock", "ds", "unworn", "nwt", "new with tags",
     "made in usa", "made in japan", "made in italy",
@@ -23,44 +25,31 @@ SCORE_SIGNALS = [
 ]
 
 
-def init_db():
-    os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS listings (
-            id TEXT PRIMARY KEY,
-            query TEXT,
-            title TEXT,
-            price REAL,
-            description TEXT,
-            seller TEXT,
-            image_url TEXT,
-            listing_url TEXT,
-            sold INTEGER DEFAULT 0,
-            ai_match INTEGER DEFAULT 0,
-            ai_reason TEXT,
-            score INTEGER DEFAULT 0,
-            first_seen TEXT,
-            sold_at TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            listing_id TEXT,
-            price REAL,
-            recorded_at TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sellers (
-            username TEXT PRIMARY KEY,
-            match_count INTEGER DEFAULT 0,
-            last_seen TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+def supa_get(table, filters=""):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{filters}"
+    resp = requests.get(url, headers=SUPA_HEADERS, timeout=10)
+    return resp.json() if resp.ok else []
+
+
+def supa_upsert(table, data):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {**SUPA_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"}
+    resp = requests.post(url, headers=headers, json=data, timeout=10)
+    return resp.ok
+
+
+def supa_update(table, data, match_col, match_val):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{match_col}=eq.{match_val}"
+    headers = {**SUPA_HEADERS, "Prefer": "return=minimal"}
+    resp = requests.patch(url, headers=headers, json=data, timeout=10)
+    return resp.ok
+
+
+def supa_insert(table, data):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {**SUPA_HEADERS, "Prefer": "return=minimal"}
+    resp = requests.post(url, headers=headers, json=data, timeout=10)
+    return resp.ok
 
 
 def keyword_score(title, description):
@@ -106,72 +95,62 @@ def extract_listings(data):
     return results
 
 
-def save_listing(conn, listing, query):
+def save_listing(listing, query):
     score = keyword_score(listing["title"], listing["description"])
-    existing = conn.execute(
-        "SELECT sold, sold_at, price FROM listings WHERE id = ?", (listing["id"],)
-    ).fetchone()
+    now = datetime.now(timezone.utc).isoformat()
 
-    now = datetime.utcnow().isoformat()
+    existing = supa_get("depop_listings", f"id=eq.{listing['id']}&select=id,sold,price")
+    existing = existing[0] if existing else None
 
     if existing is None:
-        conn.execute("""
-            INSERT INTO listings (id, query, title, price, description, seller, image_url, listing_url, sold, score, first_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            listing["id"], query, listing["title"], listing["price"],
-            listing["description"], listing["seller"], listing["image_url"],
-            listing["listing_url"], listing["sold"], score, now
-        ))
-        conn.execute(
-            "INSERT INTO price_history (listing_id, price, recorded_at) VALUES (?, ?, ?)",
-            (listing["id"], listing["price"], now)
-        )
-        upsert_seller(conn, listing["seller"], now)
+        supa_upsert("depop_listings", {
+            "id": listing["id"],
+            "query": query,
+            "title": listing["title"],
+            "price": listing["price"],
+            "description": listing["description"],
+            "seller": listing["seller"],
+            "image_url": listing["image_url"],
+            "listing_url": listing["listing_url"],
+            "sold": listing["sold"],
+            "score": score,
+            "first_seen": now,
+        })
+        supa_insert("depop_price_history", {
+            "listing_id": listing["id"],
+            "price": listing["price"],
+            "recorded_at": now,
+        })
+        upsert_seller(listing["seller"], now)
         return "new"
 
-    elif existing[0] == 0 and listing["sold"] == 1:
-        conn.execute(
-            "UPDATE listings SET sold = 1, sold_at = ? WHERE id = ?",
-            (now, listing["id"])
-        )
+    elif existing["sold"] == 0 and listing["sold"] == 1:
+        supa_update("depop_listings", {"sold": 1, "sold_at": now}, "id", listing["id"])
         return "sold"
 
-    elif existing[2] != listing["price"]:
-        conn.execute(
-            "UPDATE listings SET price = ? WHERE id = ?",
-            (listing["price"], listing["id"])
-        )
-        conn.execute(
-            "INSERT INTO price_history (listing_id, price, recorded_at) VALUES (?, ?, ?)",
-            (listing["id"], listing["price"], now)
-        )
+    elif existing["price"] != listing["price"]:
+        supa_update("depop_listings", {"price": listing["price"]}, "id", listing["id"])
+        supa_insert("depop_price_history", {
+            "listing_id": listing["id"],
+            "price": listing["price"],
+            "recorded_at": now,
+        })
         return "price_changed"
 
     return "seen"
 
 
-def upsert_seller(conn, username, now):
+def upsert_seller(username, now):
     if not username:
         return
-    existing = conn.execute("SELECT match_count FROM sellers WHERE username = ?", (username,)).fetchone()
+    supa_upsert("depop_sellers", {"username": username, "last_seen": now})
+
+
+def bump_seller_match(username):
+    existing = supa_get("depop_sellers", f"username=eq.{username}&select=match_count")
     if existing:
-        conn.execute(
-            "UPDATE sellers SET last_seen = ? WHERE username = ?",
-            (now, username)
-        )
-    else:
-        conn.execute(
-            "INSERT INTO sellers (username, match_count, last_seen) VALUES (?, 0, ?)",
-            (username, now)
-        )
-
-
-def bump_seller_match(conn, username):
-    conn.execute(
-        "UPDATE sellers SET match_count = match_count + 1 WHERE username = ?",
-        (username,)
-    )
+        count = (existing[0].get("match_count") or 0) + 1
+        supa_update("depop_sellers", {"match_count": count}, "username", username)
 
 
 def in_price_range(price):
@@ -183,7 +162,6 @@ def in_price_range(price):
 
 
 def run_once():
-    conn = sqlite3.connect(DB_PATH)
     new_listings = []
 
     for query in SEARCH_QUERIES:
@@ -196,7 +174,7 @@ def run_once():
         for listing in listings:
             if not in_price_range(listing["price"]):
                 continue
-            status = save_listing(conn, listing, query)
+            status = save_listing(listing, query)
             if status == "new":
                 new_listings.append((query, listing))
                 score = keyword_score(listing["title"], listing["description"])
@@ -208,14 +186,11 @@ def run_once():
 
         time.sleep(1)
 
-    conn.commit()
-    conn.close()
     return new_listings
 
 
 if __name__ == "__main__":
-    init_db()
-    print("[scraper] Starting Depop scraper...")
+    print("[scraper] Starting Depop scraper (Supabase)...")
     while True:
         new = run_once()
         print(f"[scraper] Done. {len(new)} new listings. Sleeping {POLL_INTERVAL}s...\n")

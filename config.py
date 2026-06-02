@@ -18,6 +18,10 @@ GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
 # Groq API key — get free at console.groq.com (used to explain WHY a listing matched)
 GROQ_API_KEY = "YOUR_GROQ_API_KEY"
 
+# Supabase — same project as agency scraper
+SUPABASE_URL = "https://aszrhjxnyecfdvndcvi.supabase.co"
+SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzenJoanhueHllY2Zkdm5kY3ZpIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTc1MDY5MiwiZXhwIjoyMDk1MzI2NjkyfQ.967bKoHOv_UjeB0nF4wp7jdIiw-CGD2XJRajbtZYKEI"
+
 # Describe exactly what you're looking for — be specific
 ITEM_DESCRIPTIONS = {
     "billabong hoodie vintage": "A 1990s Billabong hoodie. Look for: boxy fit, embroidered or screen-printed logo on chest, vintage colorways like navy/red/green. NOT modern slim fit Billabong.",

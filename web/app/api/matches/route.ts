@@ -1,22 +1,33 @@
 import { NextResponse } from 'next/server'
-import { getDb } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 
+const SUPABASE_URL = process.env.SUPABASE_URL!
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY!
+
 export async function GET() {
   try {
-    const db = getDb()
-    const rows = db.prepare(`
-      SELECT l.id, l.title, l.price, l.seller, l.listing_url, l.image_url,
-             l.first_seen, l.sold, l.sold_at, l.score, l.ai_reason, l.query,
-             COALESCE(s.match_count, 0) as seller_matches
-      FROM listings l
-      LEFT JOIN sellers s ON l.seller = s.username
-      WHERE l.ai_match = 1
-      ORDER BY l.score DESC, l.first_seen DESC
-    `).all()
-    return NextResponse.json(rows)
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/depop_listings?ai_match=eq.1&select=id,title,price,seller,listing_url,image_url,first_seen,sold,sold_at,score,ai_reason,query&order=score.desc,first_seen.desc`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    )
+    const listings = await res.json()
+
+    const sellersRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/depop_sellers?select=username,match_count`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    )
+    const sellers = await sellersRes.json()
+    const sellerMap: Record<string, number> = {}
+    for (const s of sellers) sellerMap[s.username] = s.match_count
+
+    const result = listings.map((l: Record<string, unknown>) => ({
+      ...l,
+      seller_matches: sellerMap[l.seller as string] ?? 0,
+    }))
+
+    return NextResponse.json(result)
   } catch (e: unknown) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : 'DB error' }, { status: 500 })
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'Failed' }, { status: 500 })
   }
 }
