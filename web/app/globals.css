@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0a0f1a;
+  --bg-nav: #080d18;
+  --accent: #0ea5e9;
+  --accent-dark: #0284c7;
+}
+
+body {
+  background-color: var(--bg);
+  color: white;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pb-safe {
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
