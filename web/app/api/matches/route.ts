@@ -1,29 +1,29 @@
 import { NextResponse } from 'next/server'
+import { supabase } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
-const SUPABASE_URL = process.env.SUPABASE_URL!
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY!
-
 export async function GET() {
   try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/depop_listings?ai_match=eq.1&select=id,title,price,seller,listing_url,image_url,first_seen,sold,sold_at,score,ai_reason,query&order=score.desc,first_seen.desc`,
-      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
-    )
-    const listings = await res.json()
+    const { data: listings, error } = await supabase
+      .from('depop_listings')
+      .select('id,title,price,seller,listing_url,image_url,first_seen,sold,sold_at,score,ai_reason,query')
+      .eq('ai_match', 1)
+      .order('score', { ascending: false })
+      .order('first_seen', { ascending: false })
 
-    const sellersRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/depop_sellers?select=username,match_count`,
-      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
-    )
-    const sellers = await sellersRes.json()
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    const { data: sellers } = await supabase
+      .from('depop_sellers')
+      .select('username,match_count')
+
     const sellerMap: Record<string, number> = {}
-    for (const s of sellers) sellerMap[s.username] = s.match_count
+    for (const s of sellers ?? []) sellerMap[s.username] = s.match_count
 
-    const result = listings.map((l: Record<string, unknown>) => ({
+    const result = (listings ?? []).map(l => ({
       ...l,
-      seller_matches: sellerMap[l.seller as string] ?? 0,
+      seller_matches: sellerMap[l.seller] ?? 0,
     }))
 
     return NextResponse.json(result)
